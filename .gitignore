@@ -1,0 +1,128 @@
+# --------------------------------------------------
+# 1. PyCharm Specific Files (.idea directory)
+# --------------------------------------------------
+# The .idea folder contains project-specific IDE settings.
+# It's usually local to your machine and shouldn't be versioned.
+.idea/
+*.iml # Project module files (e.g., your_project_name.iml)
+*.ipr # Old PyCharm project files
+*.iws # Old PyCharm workspace files
+# Exception for version control (optional):
+# If you have specific PyCharm run configurations you want to share,
+# you can un-comment and include them. However, be cautious as these
+# can sometimes cause conflicts across different local setups.
+#!.idea/runConfigurations/
+
+
+# --------------------------------------------------
+# 2. Python Specific Files
+# --------------------------------------------------
+# Compiled Python files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# Virtual environments
+# These directories contain all your project's dependencies and are
+# typically very large. They should be recreated locally using requirements.txt.
+venv/
+.venv/
+env/
+mri-det-env/
+.env/
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Log files
+*.log
+*.log.[0-9]*
+*.log.[0-9][0-9][0-9][0-9]*
+
+# Python installer archives
+*.whl
+
+# --------------------------------------------------
+# 3. Data Science / Machine Learning Specific Files
+# --------------------------------------------------
+# Jupyter Notebook specific files
+.ipynb_checkpoints/
+# Jupyter's execution counts can cause unnecessary diffs if not ignored
+.vscode/ # VS Code specific settings (often similar to .idea)
+
+# Large datasets (raw or processed)
+# It's best practice to keep large datasets out of Git. Use data versioning
+# tools like DVC or store them on cloud storage.
+data/
+dataset/
+*.csv
+*.tsv
+*.xlsx
+*.parquet
+*.feather
+*.json # Only if used for large data, not config
+*.txt # Only if used for large data, not code/docs
+
+# Trained models, checkpoints, and weights
+# These can be very large and are outputs of your code, not source code themselves.
+# Retrainable from source code and data.
+models/
+saved_models/
+checkpoints/
+weights/
+extra_datasets/
+*.h5
+*.pth
+*.pt
+*.bin
+*.onnx
+*.pkl
+*.joblib
+*.pb # TensorFlow Protobuf models
+
+# Results and outputs
+results/
+outputs/
+figures/
+plots/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.pdf
+*.md # If generated documentation
+
+# TensorBoard logs
+runs/
+tb_logs/
+
+# DVC (Data Version Control)
+# DVC files themselves should be versioned, but their cache/internal data shouldn.t
+.dvc/cache/
+
+
+# --------------------------------------------------
+# 4. Operating System Specific Files
+# --------------------------------------------------
+# macOS
+.DS_Store
+.Trashes
+ehthumbs.db
+.Spotlight-V100
+.TemporaryItems
+.fseventsd
+.localized
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Others
+*~ # Backup files (e.g., from text editors)
+*.swp # Vim swap files
