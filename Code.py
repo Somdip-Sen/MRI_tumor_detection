@@ -6,13 +6,17 @@ from PIL import Image
 import cv2
 import numpy as np
 import os
+import time
 
 import torch, torchvision as tv
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
+import torchvision.models as models
+import torchvision.transforms.functional as F
 
 from pathlib import Path
 
+from monai.data import CacheDataset
 from monai.transforms import (
     Compose, EnsureChannelFirstd, RandSpatialCropd, RandFlipd, RandAffined,
     Rand2DElasticd, RandGaussianNoised, RandBiasFieldd, RandHistogramShiftd,
@@ -149,8 +153,8 @@ from monai.transforms import (
 3. 
 
 '''
-ROOT = Path("data")
-BATCH = 4#32
+ROOT = Path("Data")
+BATCH = 4  #32
 NUM_W = 4  # tune to your CPU cores
 DEVICE = torch.device("mps")
 
@@ -187,7 +191,7 @@ train_tf = Compose([
     # random 0/90/180/270° rotation => Simulates different head orientations from scanners and PACS viewers
     RandAffined(keys="image", prob=0.3, rotate_range=0.08, shear_range=0.04),
     # Small random rotation (±4.5°), shear, translate. Mimics patient's head tilt & minor slice angulation; encourages geometric robustness
-    Rand2DElasticd(keys="image", prob=0.2, magnitude_range=(2, 5)),
+    Rand2DElasticd(keys="image", prob=0.2, spacing=(32, 32), magnitude_range=(2, 5)),
     # Non-linear elastic warp/Rubber-sheet warp (jelly-like).(magnitude 2–5 px) => Models patient motion / soft-tissue deformation / interpolation artefacts seen in multi-vendor scans.
     RandBiasFieldd(keys="image", prob=0.3),
     # Applies smooth multiplicative bias field => Replicates RF-coil inhomogeneity—common MRI artefact that shifts intensity across slice.
@@ -227,31 +231,84 @@ val_test_tf = Compose([
 ])
 
 
+def sanity_check(loader, device="mps", n_batches=2):
+    t0 = time.perf_counter()
+    for b, (x, y) in enumerate(loader):
+        if b >= n_batches: break  # don’t run full epoch
+        print(f"Batch {b}: tensor {x.shape} dtype={x.dtype} device={x.device}")
+        assert x.shape[1:] == (1, 224, 224), "Wrong spatial dims or channels!"
+        # push to GPU once to confirm MPS works
+        x = x.to(device);
+        y = y.to(device)
+    dt = time.perf_counter() - t0
+    imgs_per_sec = (n_batches * loader.batch_size) / dt
+    print(f"✓ {n_batches * loader.batch_size} images OK "
+          f"@ {imgs_per_sec:,.0f} img/s")
+
+
+def show_augmented_samples(loader, n=4):
+    x, y = next(iter(loader))  # fresh batch (random augments)
+    fig, ax = plt.subplots(1, n, figsize=(3 * n, 3))
+    for i in range(n):
+        img = F.to_pil_image(x[i])  # tensor ➜ PIL for display
+        ax[i].imshow(img, cmap="gray")
+        ax[i].set_title(f"label={y[i].item()}")
+        ax[i].axis("off")
+    plt.show()
+
+
 ## ---
+if __name__ == "__main__":
+    # ── DATASETS & LOADERS ──────────────────────────────────────────────
+    # ********** this dataloader can't be used with MONAI because ImageFolder feeds a PIL Image,
+    # but every transform in the list ends with d, which tells MONAI “I’m a dictionary transform—expect
+    # a Python dict like {"image": image, "label": …}.". *****************
+    #
+    # def make_loader(split, tf, shuffle):
+    #     ds = tv.datasets.ImageFolder(ROOT / split, transform=tf)
+    #     return DataLoader(ds, batch_size=BATCH,
+    #                       shuffle=shuffle,
+    #                       num_workers=NUM_W,
+    #                       pin_memory=False)
+    #
+    #
+    # train_loader = make_loader("train", train_tf, True)
+    # val_loader = make_loader("val", val_test_tf, False)
+    # test_loader = make_loader("test", val_test_tf, False)
+    #
+    # print(f"Train imgs: {len(train_loader.dataset)}  "  # type: ignore[call-arg]
+    #       f"Val imgs: {len(val_loader.dataset)}  "  # type: ignore[call-arg]
+    #       f"Test imgs: {len(test_loader.dataset)}")  # type: ignore[call-arg]
+    #***************
+    # ── QUICK SANITY CHECK ──────────────────────────────────────────────
+    # Fetch one mini-batch and push it through MPS to verify shapes/speeds.
+    # x, y = next(iter(train_loader))
+    # print("Batch:", x.shape, y.shape, "→ device:", DEVICE)
+    # x = x.to(DEVICE);
+    # y = y.to(DEVICE)
 
-# ── DATASETS & LOADERS ──────────────────────────────────────────────
-def make_loader(split, tf, shuffle):
-    ds = tv.datasets.ImageFolder(ROOT / split, transform=tf)
-    return DataLoader(ds, batch_size=BATCH,
-                      shuffle=shuffle,
-                      num_workers=NUM_W,
-                      pin_memory=True)
+    files = [{"image": f} for f in (ROOT / "train").rglob("*.jpg")]  # dict -> {"image": Tensor, …}
+    # print(*files[0:5])
+    train_ds = CacheDataset(files, transform=train_tf, num_workers=0)
+    # Compose some steps before the first Randomizable transform (e.g. LoadImage → EnsureChannelFirst → NormalizeIntensity) are executed and cached happens once (1st time and takes time)
+    train_loader = DataLoader(train_ds, batch_size=32, num_workers=4)
+    # takes the cached tensors in "train_ds" every batch and applies the random transforms that come after the cache-point (RandFlip, RandBiasField, etc.) and stacks size of BATCH = 32 tensors into a batch
+    # If you skip CacheDataset, the whole Compose chain (deterministic + random) runs for every epoch.
+
+    # ── QUICK SANITY CHECK ──────────────────────────────────────────────
+    sanity_check(train_loader)  # prints shape / speed
+    show_augmented_samples(train_loader)  # visual eyeball test
+
+# Only deterministic transforms are in the val/test pipeline, so caching changes nothing,
 
 
-train_loader = make_loader("train", train_tf, True)
-val_loader = make_loader("val", val_test_tf, False)
-test_loader = make_loader("test", val_test_tf, False)
-
-print(f"Train imgs: {len(train_loader.dataset)}  "  # type: ignore[call-arg] 
-      f"Val imgs: {len(val_loader.dataset)}  "  # type: ignore[call-arg] 
-      f"Test imgs: {len(test_loader.dataset)}")  # type: ignore[call-arg]
-
-# ── 4. QUICK SANITY CHECK ──────────────────────────────────────────────
-# Fetch one mini-batch and push it through MPS to verify shapes/speeds.
-x, y = next(iter(train_loader))
-print("Batch:", x.shape, y.shape, "→ device:", DEVICE)
-x = x.to(DEVICE);
-y = y.to(DEVICE)
+# # --- MODEL DEFINITION ──────────────────────────────────────────────
+# # Load a pre-trained EfficientNet-B0
+# model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
+#
+# # Freeze all the parameters in the feature extraction layers
+# for param in model.parameters():
+#     param.requires_grad = False
 
 # scaler = torch.amp.GradScaler(enabled=True)
 # with torch.amp.autocast(device_type="mps"):
