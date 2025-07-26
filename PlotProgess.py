@@ -1,8 +1,11 @@
 import torch
 import matplotlib.pyplot as plt
+import os
 
+checkpoint_dir = './Checkpoints'
 # Load the last saved checkpoint
-checkpoint = torch.load('training_checkpoint.pth')
+file_path = os.path.join(checkpoint_dir, 'training_checkpoint.pth')
+checkpoint = torch.load(file_path)
 history = checkpoint['history']
 # For a quick look at the raw data
 print(history)
