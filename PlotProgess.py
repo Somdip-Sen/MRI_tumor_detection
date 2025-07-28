@@ -5,7 +5,7 @@ import os
 checkpoint_dir = './Checkpoints'
 # Load the last saved checkpoint
 file_path = os.path.join(checkpoint_dir, 'training_checkpoint.pth')
-checkpoint = torch.load(file_path)
+checkpoint = torch.load(file_path, map_location=torch.device('cpu'))
 history = checkpoint['history']
 # For a quick look at the raw data
 print(history)
