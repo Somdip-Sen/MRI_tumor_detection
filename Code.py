@@ -94,6 +94,7 @@ val_test_tf = Compose([
     Resized(keys="image", spatial_size=(256, 256)),  # long edge → 256
     ToTensord(keys="image"),
     NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True)
+    # hand-off to PyTorch tensor and ImageNet stats (1-channel version)
 ])
 
 
