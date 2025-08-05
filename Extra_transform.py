@@ -8,6 +8,8 @@ def to_single_channel(t: torch.Tensor) -> torch.Tensor:
     Output: Tensor [1,H,W]
     the purpose of this file/function is to allow the worker thread to access this file parallely
     """
-    return t.mean(dim=0, keepdim=True)
+    # First, convert the tensor to a float, then calculate the mean
+    return t.to(torch.float32).mean(dim=0, keepdim=True)
+
 
 
