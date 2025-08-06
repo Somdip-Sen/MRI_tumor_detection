@@ -60,8 +60,9 @@ def load_model(model_path):
     # Load the saved weights
     model.to(DEVICE)
 
-    # Compile the model FIRST. "reduce-overhead" is a good mode for inference.
-    model = torch.compile(model, mode="reduce-overhead")
+    # Compile only if GPU is available
+    if DEVICE.type != "cpu":
+        model = torch.compile(model, mode="reduce-overhead")
 
     # Use map_location to ensure it loads correctly on CPU/GPU
     model.load_state_dict(torch.load(model_path, map_location=DEVICE))
