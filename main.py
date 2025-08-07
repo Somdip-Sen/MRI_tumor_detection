@@ -1,29 +1,89 @@
-import os
+import io, os, logging
 from pathlib import Path
-
+from typing import Dict
 import numpy as np
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from PIL import Image
-import io
 
-# Import the necessary MONAI transforms
+from contextlib import asynccontextmanager
+
+# Import the necessary MONAI transforms for inference
 from monai.transforms import (
-    Compose, LoadImaged, EnsureChannelFirstd, CenterSpatialCropd,
+    Compose, EnsureChannelFirstd, CenterSpatialCropd,
     NormalizeIntensityd, Resized, ToTensord, Lambdad
 )
+from Extra_transform import to_single_channel  # that helper function
 
-# It's assumed you have this helper function in a file named Extra_transform.py
-from Extra_transform import to_single_channel
+
+# --- 2. Load The Trained Model ---
+def load_model():
+    """
+    Model loader: prefer TorchScript .pt, else state_dict .pth
+    This function will load and prepare my model
+    :return: model
+    """
+    global BACKEND
+    # A) Try TorchScript
+    if TS_PATH.exists():
+        try:
+            logger.info(f"Loading TorchScript: {TS_PATH}")
+            ts = torch.jit.load(str(TS_PATH), map_location=DEVICE)
+            ts.eval()
+            BACKEND = "torchscript"
+            return ts
+        except Exception as e:
+            logger.warning(f"Failed to load TorchScript on {DEVICE}: {e}. Falling back to state_dict.")
+    # B) Fallback: state_dict
+    assert PTH_PATH.exists(), f"Missing model file: {PTH_PATH}"
+    logger.info(f"Loading state_dict: {PTH_PATH}")
+    model = build_efficientnet_b0_modified(len(CLASS_NAMES)).to(DEVICE)
+    sd = torch.load(str(PTH_PATH), map_location=DEVICE)
+    model.load_state_dict(sd)
+    model.eval()
+    # Optional compile on GPU only (skip on CPU)
+    if DEVICE.type != "cpu":
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+        except Exception as e:
+            logger.warning(f"torch.compile not available: {e}")
+    BACKEND = "state_dict"
+    return model
+
 
 # --- 1. Define Application and Model Details ---
-app = FastAPI(title="Brain Tumor Detection API", version="1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup phase ---
+    try:
+        dummy = torch.zeros(1, 1, 256, 256, device=DEVICE)  # (batch=1, channels=1, height=256, width=256)
+        with torch.no_grad():
+            _ = model(dummy)
+        logger.info(f"Warm-up done on {DEVICE} using backend={BACKEND}")
+    except Exception as e:
+        logger.warning(f"Warm-up skipped: {e}")
 
-# Define the location of your model and the class names
-MODEL_PATH = Path("Checkpoints/brain_tumor_classifier_best.pth")
+    # Yield control to the app (runs while API is live)
+    yield
+
+    # --- Shutdown phase (optional) ---
+    # Place any cleanup code here if needed
+    # e.g., closing database connections, releasing GPU memory, etc.
+
+
+# API logging
+app = FastAPI(title="Brain Tumor Detection API", version="1.1", lifespan=lifespan)
+# print() won’t appear in some deployment logs unless redirected
+logging.basicConfig(level=logging.INFO)
+# logger = logging.getLogger(__name__)
+logger = logging.getLogger("api")
+
 CLASS_NAMES = ['glioma', 'healthy', 'meningioma', 'pituitary']
+CKPT_DIR = Path("Checkpoints")
+TS_PATH = CKPT_DIR / "brain_tumor_classifier_best.pt"  # TorchScript (future optional)
+PTH_PATH = CKPT_DIR / "brain_tumor_classifier_best.pth"  # state_dict (my current)
 
 # Run inference on CPU for this simple API, but we can use GPU if available
 if torch.backends.mps.is_available():
@@ -33,102 +93,117 @@ elif torch.cuda.is_available():
 else:
     DEVICE = torch.device("cpu")
 
+BACKEND = "unknown"  # will be set to "torch script" or "state_dict"
 
-# --- 2. Load The Trained Model ---
-# This function will load and prepare your model
-def load_model(model_path):
-    # IMPORTANT: Ensure this matches the model you trained (EfficientNet-B0)
+preprocess_transform = Compose([
+    EnsureChannelFirstd(keys="image", strict_check=False),
+    ToTensord(keys="image"),
+    Lambdad(keys="image", func=to_single_channel),
+    CenterSpatialCropd(keys="image", roi_size=(224, 224)),
+    Resized(keys="image", spatial_size=(256, 256)),
+    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+])
+model = load_model()
+
+
+def preprocess_transform_image(image_np: np.ndarray) -> torch.Tensor:
+    """
+    Apply the preprocessing transforms
+    :param image_np:
+    :return:Torch Tensor
+    """
+    data_dict = {"image": image_np}
+    processed_data = preprocess_transform(data_dict)
+    return processed_data["image"].unsqueeze(0)  # .unsqueeze(0) adds a new batch
+    # dimension at position 0, turning the image from: [1, 256, 256] → [1, 1, 256, 256]
+
+
+def build_efficientnet_b0_modified(num_classes: int = 4) -> nn.Module:
+    """
+    This function will load and prepare my model
+    :param num_classes:
+    :return: custom neural network model
+    """
     model = models.efficientnet_b0(weights=None)
     original_first_layer = model.features[0][0]  # initial layer modification
-
-    # Adapt the model for 1-channel input and 4 classes (same as in your training script)
-    model.features[0][0] = nn.Conv2d(in_channels=1,
-                                     out_channels=original_first_layer.out_channels,
-                                     kernel_size=original_first_layer.kernel_size,
-                                     stride=original_first_layer.stride,
-                                     padding=original_first_layer.padding,
-                                     bias=(original_first_layer.bias is not None)
-                                     )
+    # Adapt the model for 1-channel input and 4 classes (same as in modely training script)
+    model.features[0][0] = nn.Conv2d(
+        in_channels=1,
+        out_channels=original_first_layer.out_channels,
+        kernel_size=original_first_layer.kernel_size,
+        stride=original_first_layer.stride,
+        padding=original_first_layer.padding,
+        bias=(original_first_layer.bias is not None),
+    )
     # Get the number of input features for the classifier
     num_features = model.classifier[1].in_features
-
-    # Replace the classifier with a new one for our 4 classes
-    model.classifier[1] = nn.Linear(num_features, len(CLASS_NAMES))
-
-
-
-    # Load the saved weights
-    model.to(DEVICE)
-
-    # Compile only if GPU is available
-    if DEVICE.type != "cpu":
-        model = torch.compile(model, mode="reduce-overhead")
-
-    # Use map_location to ensure it loads correctly on CPU/GPU
-    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
-
-    model.eval()  # Set model to evaluation mode
+    model.classifier[1] = nn.Linear(num_features, num_classes)
     return model
 
 
-# --- 3. Define the Preprocessing Pipeline ---
-preprocess_transform = Compose([
-    # No loadImaged as it assumes the input is a file path (string).But we're feeding it a NumPy array
-    EnsureChannelFirstd(keys="image", strict_check=False),
-    ToTensord(keys="image"), # Convert to a Tensor FIRST bcz The line t.mean(dim=0, ...) inside your to_single_channel function fails
-    # will fail because NumPy arrays do not understand the dim argument (they use axis instead), while PyTorch Tensors do
-    # in training code.py LoadImaged, reads the image file from the disk and immediately converts it into a PyTorch Tensor
-    Lambdad(keys="image", func=to_single_channel),
-    CenterSpatialCropd(keys="image", roi_size=(224, 224)),
-    # centre crop -- we can otherwise resize to 224x224 but most medical CV papers keep the classic resize-then-centre-crop protocol
-    # bcz 1. imagenet model was pretrained on 224 × 224 images 2. cropping removes the border artefacts safely
-    Resized(keys="image", spatial_size=(256, 256)),  # long edge → 256
-    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True)
-])
-
-# Load the model when the application starts
-model = load_model(MODEL_PATH)
-
-
-# --- 4. Define the API Endpoints ---
+# Endpoints
 @app.get("/")
-def home():
-    """A simple health check endpoint."""
-    return {"status": "ok", "message": "API is running"}
+def root():
+    return {"status": "ok", "message": "API is running", "backend": BACKEND, "device": str(DEVICE)}
+
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+
+ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_UPLOAD_MB = 10  # <10MB file allowed
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    """
-    Accepts an image file, preprocesses it, runs inference, and returns the prediction.
-    """
-    # Read the image file uploaded by the user
-    image_bytes = await file.read()
-    # Load image using PIL and convert to RGB
-    image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+async def predict(file: UploadFile = File(...)) -> Dict:
+    # MIME guard
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported content-type: {file.content_type}. "
+                   f"Allowed: {sorted(ALLOWED_CONTENT_TYPES)}"
+        )
+    # Load & validate image
+    try:
+        image_bytes = await file.read()
 
-    # Convert PIL Image to NumPy array
-    image_np = np.array(image)
+        # size guard
+        # if len(image_bytes) > MAX_UPLOAD_BYTES: --> peeking to the content header can do fast fail-check
+        content_length = file.headers.get("content-length")
+        if content_length and int(content_length) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large (> {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)"
+            )
+        # Validate it’s a real image
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        # So that, If a client sends a non-image or corrupt file, FastAPI will not crash.
+    except Exception as e:
+        # classic FastAPI shape → {"detail": "..."}
+        raise HTTPException(status_code=400, detail=f"Invalid image: {e}")
 
-    # Create a dictionary wrap for MONAI transforms support
-    data_dict = {"image": image_np}
+    # Preprocess
+    image_np = np.array(img)
+    input_tensor = preprocess_transform_image(image_np).to(DEVICE)
 
-    # Apply the preprocessing transforms
-    processed_data = preprocess_transform(data_dict)
-    input_tensor = processed_data["image"].unsqueeze(0).to(DEVICE)  # .unsqueeze(0) adds a new batch
-    # dimension at position 0, turning the image from: [1, 256, 256] → [1, 1, 256, 256]
+    # Inference
+    with torch.inference_mode():  # instead of torch.no_grad() for a tiny speed bump
+        logits = model(input_tensor)
+        probs = torch.softmax(logits, dim=1)[0]
 
-    # Run prediction
-    with torch.no_grad():
-        output = model(input_tensor)
-        probabilities = torch.softmax(output, dim=1)
-        print("probabilities:", probabilities) # probabilities: metatensor([[0.0099, 0.9343, 0.0508, 0.0050]], device='mps:0')
-        confidence, predicted_class_idx = torch.max(probabilities, 1)
-
-    predicted_class_name = CLASS_NAMES[predicted_class_idx.item()]
-    confidence_score = confidence.item()
+    top_idx = int(torch.argmax(probs).item())
+    top_label = CLASS_NAMES[top_idx]
+    top_conf = float(probs[top_idx].item())
+    all_probs = {CLASS_NAMES[i]: float(probs[i].item()) for i in range(len(CLASS_NAMES))}
+    logger.info(f"Probabilities: {all_probs}")
 
     return {
-        "predicted_class": predicted_class_name,
-        "confidence": f"{confidence_score:.4f}"
+        "predicted_class": top_label,
+        "confidence": round(top_conf, 4),
+        "all_class_probabilities": all_probs,
+        "backend": BACKEND,
+        "device": str(DEVICE),
     }
