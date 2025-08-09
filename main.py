@@ -17,6 +17,59 @@ from monai.transforms import (
 )
 from Extra_transform import to_single_channel  # that helper function
 
+def preprocess_transform_image(image_np: np.ndarray) -> torch.Tensor:
+    """
+    Apply the preprocessing transforms
+    :param image_np:
+    :return:Torch Tensor
+    """
+    data_dict = {"image": image_np}
+    processed_data = preprocess_transform(data_dict)
+    return processed_data["image"].unsqueeze(0)  # .unsqueeze(0) adds a new batch
+    # dimension at position 0, turning the image from: [1, 256, 256] → [1, 1, 256, 256]
+
+
+def build_efficientnet_b0_modified(num_classes: int = 4) -> nn.Module:
+    """
+    This function will load and prepare my model
+    :param num_classes:
+    :return: custom neural network model
+    """
+    model = models.efficientnet_b0(weights=None)
+    original_first_layer = model.features[0][0]  # initial layer modification
+    # Adapt the model for 1-channel input and 4 classes (same as in modely training script)
+    model.features[0][0] = nn.Conv2d(
+        in_channels=1,
+        out_channels=original_first_layer.out_channels,
+        kernel_size=original_first_layer.kernel_size,
+        stride=original_first_layer.stride,
+        padding=original_first_layer.padding,
+        bias=(original_first_layer.bias is not None),
+    )
+    # Get the number of input features for the classifier
+    num_features = model.classifier[1].in_features
+    model.classifier[1] = nn.Linear(num_features, num_classes)
+    return model
+
+# --- 1. Define Application and Model Details ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup phase ---
+    try:
+        dummy = torch.zeros(1, 1, 256, 256, device=DEVICE)  # (batch=1, channels=1, height=256, width=256)
+        with torch.no_grad():
+            _ = model(dummy)
+        logger.info(f"Warm-up done on {DEVICE} using backend={BACKEND}")
+    except Exception as e:
+        logger.warning(f"Warm-up skipped: {e}")
+
+    # Yield control to the app (runs while API is live)
+    yield
+
+    # --- Shutdown phase (optional) ---
+    # Place any cleanup code here if needed
+    # e.g., closing database connections, releasing GPU memory, etc.
+
 
 # --- 2. Load The Trained Model ---
 def load_model():
@@ -41,37 +94,31 @@ def load_model():
     logger.info(f"Loading state_dict: {PTH_PATH}")
     model = build_efficientnet_b0_modified(len(CLASS_NAMES)).to(DEVICE)
     sd = torch.load(str(PTH_PATH), map_location=DEVICE)
-    model.load_state_dict(sd)
+    # if you accidentally saved a full checkpoint:
+    if isinstance(sd, dict) and "model_state_dict" in sd:
+        sd = sd["model_state_dict"]
+
+    # strip _orig_mod. prefix from compiled checkpoints
+    if any(k.startswith("_orig_mod.") for k in sd.keys()):
+        sd = {k.replace("_orig_mod.", ""): v for k, v in sd.items()}
+
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    if missing or unexpected:
+        logger.warning(f"load_state_dict mismatches -> missing:{missing} unexpected:{unexpected}")
     model.eval()
     # Optional compile on GPU only (skip on CPU)
     if DEVICE.type != "cpu":
         try:
-            model = torch.compile(model, mode="reduce-overhead")
+            # Optional compile: CUDA only. Skip on CPU/MPS.
+            if DEVICE.type == "cuda":
+                try:
+                    model = torch.compile(model, mode="reduce-overhead")
+                except Exception as e:
+                    logger.warning(f"torch.compile skipped on CUDA: {e}")
         except Exception as e:
             logger.warning(f"torch.compile not available: {e}")
     BACKEND = "state_dict"
     return model
-
-
-# --- 1. Define Application and Model Details ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # --- Startup phase ---
-    try:
-        dummy = torch.zeros(1, 1, 256, 256, device=DEVICE)  # (batch=1, channels=1, height=256, width=256)
-        with torch.no_grad():
-            _ = model(dummy)
-        logger.info(f"Warm-up done on {DEVICE} using backend={BACKEND}")
-    except Exception as e:
-        logger.warning(f"Warm-up skipped: {e}")
-
-    # Yield control to the app (runs while API is live)
-    yield
-
-    # --- Shutdown phase (optional) ---
-    # Place any cleanup code here if needed
-    # e.g., closing database connections, releasing GPU memory, etc.
-
 
 # API logging
 app = FastAPI(title="Brain Tumor Detection API", version="1.1", lifespan=lifespan)
@@ -106,39 +153,7 @@ preprocess_transform = Compose([
 model = load_model()
 
 
-def preprocess_transform_image(image_np: np.ndarray) -> torch.Tensor:
-    """
-    Apply the preprocessing transforms
-    :param image_np:
-    :return:Torch Tensor
-    """
-    data_dict = {"image": image_np}
-    processed_data = preprocess_transform(data_dict)
-    return processed_data["image"].unsqueeze(0)  # .unsqueeze(0) adds a new batch
-    # dimension at position 0, turning the image from: [1, 256, 256] → [1, 1, 256, 256]
 
-
-def build_efficientnet_b0_modified(num_classes: int = 4) -> nn.Module:
-    """
-    This function will load and prepare my model
-    :param num_classes:
-    :return: custom neural network model
-    """
-    model = models.efficientnet_b0(weights=None)
-    original_first_layer = model.features[0][0]  # initial layer modification
-    # Adapt the model for 1-channel input and 4 classes (same as in modely training script)
-    model.features[0][0] = nn.Conv2d(
-        in_channels=1,
-        out_channels=original_first_layer.out_channels,
-        kernel_size=original_first_layer.kernel_size,
-        stride=original_first_layer.stride,
-        padding=original_first_layer.padding,
-        bias=(original_first_layer.bias is not None),
-    )
-    # Get the number of input features for the classifier
-    num_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(num_features, num_classes)
-    return model
 
 
 # Endpoints
