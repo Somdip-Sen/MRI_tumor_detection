@@ -1,3 +1,5 @@
+
+
 # Step 1: Use an official Miniconda image as the base
 FROM continuumio/miniconda3
 
@@ -19,5 +21,5 @@ COPY . .
 EXPOSE 8000
 
 # Step 7: Define the command to run your app
-# It first activates the shell for conda, then runs the command inside your environment
+# It first activates the shell for conda, then runs the ad-hoc command inside your environment
 CMD ["conda", "run", "-n", "mri-env", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
