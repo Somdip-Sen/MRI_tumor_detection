@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pt
+*.pth
+.env
+.venv
+Checkpoints/        # you’ll mount this at run-time
+data/
+.git
+.gitignore
