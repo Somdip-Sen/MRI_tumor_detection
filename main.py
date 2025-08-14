@@ -7,6 +7,8 @@ import torch.nn as nn
 import torchvision.models as models
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from PIL import Image
+import gradio as gr
+import pandas as pd
 
 from contextlib import asynccontextmanager
 
@@ -16,6 +18,7 @@ from monai.transforms import (
     NormalizeIntensityd, Resized, ToTensord, Lambdad
 )
 from Extra_transform import to_single_channel  # that helper function
+
 
 def preprocess_transform_image(image_np: np.ndarray) -> torch.Tensor:
     """
@@ -50,6 +53,7 @@ def build_efficientnet_b0_modified(num_classes: int = 4) -> nn.Module:
     num_features = model.classifier[1].in_features
     model.classifier[1] = nn.Linear(num_features, num_classes)
     return model
+
 
 # --- 1. Define Application and Model Details ---
 @asynccontextmanager
@@ -120,6 +124,7 @@ def load_model():
     BACKEND = "state_dict"
     return model
 
+
 # API logging
 app = FastAPI(title="Brain Tumor Detection API", version="1.1", lifespan=lifespan)
 # print() won’t appear in some deployment logs unless redirected
@@ -153,7 +158,7 @@ preprocess_transform = Compose([
 model = load_model()
 
 
-
+#
 
 
 # Endpoints
@@ -222,3 +227,72 @@ async def predict(file: UploadFile = File(...)) -> Dict:
         "backend": BACKEND,
         "device": str(DEVICE),
     }
+
+
+# ________________ UI Part _______________
+# ---------- Fancy, responsive, animated CSS ----------
+UI_CSS = """
+:root{
+  --radius: 20px; --pad: 18px;
+}
+.gradio-container {max-width: 1080px !important;}
+#card {
+  border-radius: var(--radius);
+  padding: var(--pad);
+  background: linear-gradient(120deg, rgba(99,102,241,.08), rgba(236,72,153,.08));
+  backdrop-filter: blur(4px);
+  transition: transform .25s ease, box-shadow .25s ease, background .6s ease;
+  box-shadow: 0 12px 30px rgba(0,0,0,.08);
+}
+#card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 18px 50px rgba(0,0,0,.12);
+  background: linear-gradient(120deg, rgba(99,102,241,.12), rgba(236,72,153,.12));
+}
+#headline {font-weight:800; letter-spacing:.2px; margin-bottom: 8px;}
+#sub {opacity:.7; margin-top:-6px}
+.gr-button {border-radius: 14px;}
+"""
+
+# ---------- UI callback (reuses your loaded model & preprocess) ----------
+CLASSES = ["glioma", "healthy", "meningioma", "pituitary"]
+
+
+def predict_for_ui(pil_img):
+    # reuse your existing preprocess -> model -> softmax
+    img_np = np.array(pil_img)
+    x = preprocess_transform_image(img_np).to(DEVICE)
+    with torch.no_grad():
+        logits = model(x)
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+
+    top_idx = int(probs.argmax())
+    df = pd.DataFrame({"class": CLASSES, "prob": probs})
+    return CLASSES[top_idx], f"{probs[top_idx]:.4f}", gr.update(value=df), pil_img
+
+
+def build_ui():
+    with gr.Blocks(theme=gr.themes.Base()) as demo:
+        gr.Markdown("## Brain Tumor Classifier (Demo)")
+        in_img = gr.Image(type="pil", label="Upload MRI")
+        out_img = gr.Image(label="Preview")
+        pred = gr.Textbox(label="Predicted Class", interactive=False)
+        conf = gr.Textbox(label="Confidence", interactive=False)
+        bar = gr.BarPlot(
+            value=pd.DataFrame({"class": CLASSES, "prob": [0] * len(CLASSES)}),
+            x="class", y="prob", vertical=True, title="Class Probabilities"
+        )
+        btn = gr.Button("Predict")
+        btn.click(predict_for_ui, inputs=in_img, outputs=[pred, conf, bar, out_img])
+    return demo
+
+
+demo = build_ui()
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+from gradio.routes import mount_gradio_app
+
+app = mount_gradio_app(app, demo, path="/ui")

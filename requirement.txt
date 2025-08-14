@@ -6,3 +6,5 @@ monai==1.5.0
 scikit-learn==1.7.0
 opencv-python==4.12.0.88
 python-multipart==0.0.20
+gradio==5.42.0
+pandas==2.3.1
