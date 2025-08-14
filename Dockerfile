@@ -43,19 +43,19 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 # APP SETUP -----------
 WORKDIR /app
-COPY requirements.txt ./
+COPY requirement.txt ./
 
 # INSTALLATION -------------
 # CPU: force torch CPU wheels from PyTorch repo
-# GPU: default install from requirements.txt assumes CUDA
+# GPU: default install from requirement.txt assumes CUDA
 RUN pip install --upgrade pip && \
     pip install --index-url https://download.pytorch.org/whl/cpu \
         torch==2.6.0 torchvision==0.21.0 && \
-    pip install -r requirements.txt
+    pip install -r requirement.txt
 
 # GPU -->
 # RUN pip install --upgrade pip && \
-#     pip install -r requirements.txt
+#     pip install -r requirement.txt
 
 # Stage 2: GPU (CUDA) build ##########################
 FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime AS base_gpu
@@ -76,9 +76,9 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 
 WORKDIR /app
-COPY requirements.txt .
+COPY requirement.txt .
 
-RUN pip install --upgrade pip && pip install -r requirements.txt --no-deps
+RUN pip install --upgrade pip && pip install -r requirement.txt --no-deps
 
 
 # FINAL STAGE: Use whichever base was chosen
@@ -96,10 +96,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # COPY --from=base_cpu /app /app  # only if needed
 
 # Add app user (non-root)
-RUN useradd -m -u 10001 appuser
+RUN useradd -m -u 10001 appuser && \
+    mkdir -p /app/Checkpoints && chown -R 10001:10001 /app
 USER appuser
 # Copy everything now
-RUN mkdir -p /app/Checkpoints && chown -R 10001:10001 /app
 COPY --chown=appuser:appuser . /app
 
 # Add health check (shared)
@@ -110,6 +110,8 @@ EXPOSE ${PORT}
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers ${UVICORN_WORKERS} --proxy-headers"]
 
+
+# ______________________________________________
 ### Basic steamline, replaced by code above
 ## Step 1: Use an official Miniconda image as the base
 #FROM continuumio/miniconda3

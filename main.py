@@ -143,7 +143,7 @@ else:
 BACKEND = "unknown"  # will be set to "torch script" or "state_dict"
 
 preprocess_transform = Compose([
-    EnsureChannelFirstd(keys="image", strict_check=False),
+    EnsureChannelFirstd(keys="image", channel_dim=-1, strict_check=False),  # HWC -> CHW
     ToTensord(keys="image"),
     Lambdad(keys="image", func=to_single_channel),
     CenterSpatialCropd(keys="image", roi_size=(224, 224)),

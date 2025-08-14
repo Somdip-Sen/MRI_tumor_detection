@@ -3,9 +3,19 @@ __pycache__/
 *.pyo
 *.pt
 *.pth
+*.pyd
+*.swp
 .env
-.venv
-Checkpoints/        # you’ll mount this at run-time
-data/
-.git
+.venv/
+venv/
+.idea/
+.vscode/
+Data/
+extra_datasets/
+mri-det-env/
+plots/
+.git/
 .gitignore
+logs/
+Checkpoints/*        # keep empty dir in image; mount at runtime
+!Checkpoints/.gitkeep
